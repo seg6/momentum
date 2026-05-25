@@ -1,0 +1,16 @@
+[package]
+name = "momentum-transport"
+description = "Per-OS Bluetooth transports for momentum-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+crossbeam-channel = { workspace = true }
+momentum-core = { path = "../momentum-core" }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { workspace = true }
