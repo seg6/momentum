@@ -11,6 +11,7 @@ use momentum_transport::open_default;
 use serde::Serialize;
 
 use crate::args::{AncCommand, Cli, Command, EqCommand, Switch, WindArg};
+use crate::discover;
 
 const DEFAULT_CHANNEL: u8 = 1;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(4);
@@ -31,10 +32,10 @@ pub fn run(cli: Cli) -> Result<()> {
 }
 
 fn open_headset(cli: &Cli) -> Result<Headset<Box<dyn Transport>>> {
-    let address = cli
-        .address
-        .clone()
-        .context("no headset address: pass --address or set MOMENTUM_ADDRESS")?;
+    let address = match cli.address.clone() {
+        Some(addr) => addr,
+        None => discover::autodetect()?,
+    };
     let channel = cli.spp_channel.unwrap_or(DEFAULT_CHANNEL);
     let timeout = cli.timeout.unwrap_or(DEFAULT_TIMEOUT);
     let transport = open_default(&address, channel, timeout)

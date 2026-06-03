@@ -50,8 +50,10 @@ until adaptive is disabled.
 
 ## Configuration
 
-The headset Bluetooth address is required. Pass it explicitly or set
-the environment variable:
+The headset Bluetooth address is auto-detected by running
+`bluetoothctl devices Connected` and picking the unique connected
+device whose name contains `MOMENTUM`. To override, pass `--address`
+or set the environment variable:
 
 ```
 export MOMENTUM_ADDRESS=AA:BB:CC:DD:EE:FF
