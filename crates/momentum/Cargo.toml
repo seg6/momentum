@@ -8,7 +8,11 @@ repository.workspace = true
 
 [[bin]]
 name = "momentum"
-path = "src/main.rs"
+path = "src/bin/momentum.rs"
+
+[lib]
+name = "momentum"
+path = "src/lib.rs"
 
 [dependencies]
 anyhow = { workspace = true }

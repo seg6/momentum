@@ -1,2 +1,6 @@
 /target
 /hdb630-control-macos
+/apps/momentum-ui/node_modules
+/apps/momentum-ui/dist
+/apps/momentum-ui/src-tauri/target
+/apps/momentum-ui/src-tauri/gen

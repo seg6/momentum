@@ -1,5 +1,4 @@
-//! CLI subcommand handlers.
-
+use std::io::Write;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
@@ -16,18 +15,18 @@ use crate::discover;
 const DEFAULT_CHANNEL: u8 = 1;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(4);
 
-pub fn run(cli: Cli) -> Result<()> {
+pub fn run(cli: Cli, w: &mut impl Write) -> Result<()> {
     let json = cli.json;
     let mut headset = open_headset(&cli)?;
 
     match cli.command {
-        Command::Status => status(&mut headset, json),
-        Command::Battery => battery(&mut headset, json),
-        Command::Anc { command } => anc(&mut headset, command, json),
-        Command::Transparency { level } => transparency(&mut headset, level, json),
-        Command::Eq { command } => eq(&mut headset, command.unwrap_or(EqCommand::Show), json),
-        Command::Info => info(&mut headset, json),
-        Command::Watch => watch(&mut headset),
+        Command::Status => status(&mut headset, json, w),
+        Command::Battery => battery(&mut headset, json, w),
+        Command::Anc { command } => anc(&mut headset, command, json, w),
+        Command::Transparency { level } => transparency(&mut headset, level, json, w),
+        Command::Eq { command } => eq(&mut headset, command.unwrap_or(EqCommand::Show), json, w),
+        Command::Info => info(&mut headset, json, w),
+        Command::Watch => watch(&mut headset, w),
     }
 }
 
@@ -43,45 +42,53 @@ fn open_headset(cli: &Cli) -> Result<Headset<Box<dyn Transport>>> {
     Ok(Headset::new(transport))
 }
 
-fn status<T: Transport>(h: &mut Headset<T>, json: bool) -> Result<()> {
+fn status<T: Transport>(h: &mut Headset<T>, json: bool, w: &mut impl Write) -> Result<()> {
     let state = h.show_state()?;
     if json {
-        return print_json(&state);
+        return print_json(&state, w);
     }
-    println!("MOMENTUM 4");
-    print_row("battery", format!("{}%", state.battery));
-    print_row("charging", state.charging);
-    print_row("anc", state.noise);
-    print_row("anc modes", state.anc_modes);
-    print_row("transparency", state.transparency);
+    writeln!(w, "MOMENTUM 4")?;
+    print_row("battery", format!("{}%", state.battery), w)?;
+    print_row("charging", state.charging, w)?;
+    print_row("anc", state.noise, w)?;
+    print_row("anc modes", state.anc_modes, w)?;
+    print_row("transparency", state.transparency, w)?;
     Ok(())
 }
 
-fn battery<T: Transport>(h: &mut Headset<T>, json: bool) -> Result<()> {
+fn battery<T: Transport>(h: &mut Headset<T>, json: bool, w: &mut impl Write) -> Result<()> {
     let percent = h.battery()?;
     if json {
-        return print_json(&serde_json::json!({ "level": percent }));
+        return print_json(&serde_json::json!({ "level": percent }), w);
     }
-    println!("{percent}%");
+    writeln!(w, "{percent}%")?;
     Ok(())
 }
 
-fn anc<T: Transport>(h: &mut Headset<T>, command: Option<AncCommand>, json: bool) -> Result<()> {
+fn anc<T: Transport>(
+    h: &mut Headset<T>,
+    command: Option<AncCommand>,
+    json: bool,
+    w: &mut impl Write,
+) -> Result<()> {
     match command {
         None => {
             let master = h.anc()?;
             let modes = h.anc_modes()?;
             if json {
-                return print_json(&serde_json::json!({
-                    "on": matches!(master, Toggle::On),
-                    "wind": modes.wind,
-                    "adaptive": modes.adaptive,
-                }));
+                return print_json(
+                    &serde_json::json!({
+                        "on": matches!(master, Toggle::On),
+                        "wind": modes.wind,
+                        "adaptive": modes.adaptive,
+                    }),
+                    w,
+                );
             }
-            println!("ANC");
-            print_row("master", master);
-            print_row("wind", modes.wind);
-            print_row("adaptive", on_off(modes.adaptive));
+            writeln!(w, "ANC")?;
+            print_row("master", master, w)?;
+            print_row("wind", modes.wind, w)?;
+            print_row("adaptive", on_off(modes.adaptive), w)?;
             Ok(())
         }
         Some(AncCommand::On) => h.set_anc(Toggle::On).map_err(Into::into),
@@ -101,15 +108,20 @@ fn anc<T: Transport>(h: &mut Headset<T>, command: Option<AncCommand>, json: bool
     }
 }
 
-fn transparency<T: Transport>(h: &mut Headset<T>, level: Option<u8>, json: bool) -> Result<()> {
+fn transparency<T: Transport>(
+    h: &mut Headset<T>,
+    level: Option<u8>,
+    json: bool,
+    w: &mut impl Write,
+) -> Result<()> {
     match level {
         Some(level) => h.set_transparency(level).map_err(Into::into),
         None => {
             let level = h.transparency()?;
             if json {
-                print_json(&serde_json::json!({ "level": level }))
+                print_json(&serde_json::json!({ "level": level }), w)
             } else {
-                println!("{level}");
+                writeln!(w, "{level}")?;
                 Ok(())
             }
         }
@@ -127,7 +139,12 @@ fn on_off(b: bool) -> &'static str {
     if b { "on" } else { "off" }
 }
 
-fn eq<T: Transport>(h: &mut Headset<T>, command: EqCommand, json: bool) -> Result<()> {
+fn eq<T: Transport>(
+    h: &mut Headset<T>,
+    command: EqCommand,
+    json: bool,
+    w: &mut impl Write,
+) -> Result<()> {
     match command {
         EqCommand::Show => {
             let config = h.eq_config()?;
@@ -135,44 +152,55 @@ fn eq<T: Transport>(h: &mut Headset<T>, command: EqCommand, json: bool) -> Resul
                 .map(|b| h.eq_gain(b))
                 .collect::<momentum_core::Result<_>>()?;
             if json {
-                return print_json(&serde_json::json!({
-                    "min": config.min_gain,
-                    "max": config.max_gain,
-                    "bands": bands,
-                }));
+                return print_json(
+                    &serde_json::json!({
+                        "min": config.min_gain,
+                        "max": config.max_gain,
+                        "bands": bands,
+                    }),
+                    w,
+                );
             }
-            println!("EQ");
-            print_row("range", format!("{}..{}", config.min_gain, config.max_gain));
+            writeln!(w, "EQ")?;
+            print_row("range", format!("{}..{}", config.min_gain, config.max_gain), w)?;
             for (i, gain) in bands.iter().enumerate() {
-                print_row(&format!("band {}", i + 1), gain);
+                print_row(&format!("band {}", i + 1), gain, w)?;
             }
             Ok(())
         }
         EqCommand::Set { band, gain } => {
-            // Public API uses 1-indexed bands; the wire is 0-indexed.
-            let band0 = band
-                .checked_sub(1)
-                .ok_or_else(|| anyhow!("band must be >= 1"))?;
+            let config = h.eq_config()?;
+            if band == 0 || band > config.bands {
+                return Err(anyhow!("band must be in 1..={}, got {band}", config.bands));
+            }
+            if gain < config.min_gain || gain > config.max_gain {
+                return Err(anyhow!(
+                    "gain must be in {}..={}, got {gain}",
+                    config.min_gain,
+                    config.max_gain
+                ));
+            }
+            let band0 = band - 1;
             h.set_eq_gain(band0, gain)?;
             Ok(())
         }
     }
 }
 
-fn info<T: Transport>(h: &mut Headset<T>, json: bool) -> Result<()> {
+fn info<T: Transport>(h: &mut Headset<T>, json: bool, w: &mut impl Write) -> Result<()> {
     let info = h.device_info()?;
     if json {
-        return print_json(&info);
+        return print_json(&info, w);
     }
-    println!("Device Info");
-    print_row("model", &info.model);
-    print_row("release", &info.release);
-    print_row("hw revision", &info.hw_revision);
-    print_row("gaia build", &info.gaia_build);
+    writeln!(w, "Device Info")?;
+    print_row("model", &info.model, w)?;
+    print_row("release", &info.release, w)?;
+    print_row("hw revision", &info.hw_revision, w)?;
+    print_row("gaia build", &info.gaia_build, w)?;
     Ok(())
 }
 
-fn watch<T: Transport>(h: &mut Headset<T>) -> Result<()> {
+fn watch<T: Transport>(h: &mut Headset<T>, w: &mut impl Write) -> Result<()> {
     let rx = h
         .notifications()
         .ok_or_else(|| anyhow!("transport does not surface notifications"))?;
@@ -192,7 +220,8 @@ fn watch<T: Transport>(h: &mut Headset<T>) -> Result<()> {
                 let notification = Notification::decode(&frame);
                 let line = serde_json::to_string(&notification)
                     .context("encoding notification as JSON")?;
-                println!("{line}");
+                writeln!(w, "{line}")?;
+                w.flush()?;
             }
             Err(_) => {
                 return Err(anyhow!("notification stream closed"));
@@ -201,11 +230,12 @@ fn watch<T: Transport>(h: &mut Headset<T>) -> Result<()> {
     }
 }
 
-fn print_row<V: core::fmt::Display>(label: &str, value: V) {
-    println!("  {label:<22} {value}");
+fn print_row<V: core::fmt::Display>(label: &str, value: V, w: &mut impl Write) -> Result<()> {
+    writeln!(w, "  {label:<22} {value}")?;
+    Ok(())
 }
 
-fn print_json<T: Serialize>(value: &T) -> Result<()> {
-    println!("{}", serde_json::to_string(value)?);
+fn print_json<T: Serialize>(value: &T, w: &mut impl Write) -> Result<()> {
+    writeln!(w, "{}", serde_json::to_string(value)?)?;
     Ok(())
 }
