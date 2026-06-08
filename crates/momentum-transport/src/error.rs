@@ -14,6 +14,9 @@ pub enum Error {
     #[error("SPP connection closed by peer")]
     Closed,
 
+    #[error("another momentum process is already connected to {0}")]
+    Busy(String),
+
     #[error("Bluetooth transport is not implemented on {}", std::env::consts::OS)]
     Unsupported,
 }

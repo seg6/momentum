@@ -49,9 +49,9 @@ use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use libc::{
-    AF_BLUETOOTH, EBADF, EBUSY, EINTR, LOCK_EX, SHUT_RDWR, SO_SNDTIMEO, SOCK_STREAM, SOL_SOCKET,
-    c_void, connect, flock as libc_flock, read, setsockopt, shutdown, sockaddr, socket, timeval,
-    write,
+    AF_BLUETOOTH, EAGAIN, EBADF, EBUSY, EINTR, EWOULDBLOCK, LOCK_EX, LOCK_NB, SHUT_RDWR,
+    SO_SNDTIMEO, SOCK_STREAM, SOL_SOCKET, c_void, connect, flock as libc_flock, read, setsockopt,
+    shutdown, sockaddr, socket, timeval, write,
 };
 use momentum_core::{NotificationFrame, Transport, spp};
 use tracing::{debug, trace, warn};
@@ -94,6 +94,7 @@ const ERROR_BIT: u16 = 0x0080;
 /// post-register state snapshot), so it goes to the notification
 /// channel where decoders can pick it up.
 struct InFlight {
+    expected_vendor: u16,
     expected_response: u16,
     expected_error: u16,
     tx: Sender<Vec<u8>>,
@@ -208,6 +209,7 @@ impl Transport for SppTransport {
                 "GAIA packet shorter than 4 bytes",
             ))));
         }
+        let expected_vendor = u16::from_be_bytes([packet[0], packet[1]]);
         let command_opcode = u16::from_be_bytes([packet[2], packet[3]]);
         let expected_response = command_opcode | RESPONSE_BIT;
         let expected_error = expected_response | ERROR_BIT;
@@ -219,6 +221,7 @@ impl Transport for SppTransport {
                 .lock()
                 .map_err(|_| momentum_core::Error::Transport(Box::new(Error::Closed)))?;
             *guard = Some(InFlight {
+                expected_vendor,
                 expected_response,
                 expected_error,
                 tx,
@@ -344,9 +347,10 @@ fn dispatch_frame(
             Ok(g) => g,
             Err(_) => return,
         };
-        let take = guard
-            .as_ref()
-            .is_some_and(|slot| opcode == slot.expected_response || opcode == slot.expected_error);
+        let take = guard.as_ref().is_some_and(|slot| {
+            vendor == slot.expected_vendor
+                && (opcode == slot.expected_response || opcode == slot.expected_error)
+        });
         if take { guard.take() } else { None }
     };
 
@@ -387,9 +391,13 @@ fn acquire_lock(addr: BdAddr) -> Result<File> {
     }
     let file = File::create(&path)?;
     // SAFETY: `file` owns a valid fd; `LOCK_EX` is a defined constant.
-    let result = unsafe { libc_flock(file.as_raw_fd(), LOCK_EX) };
+    let result = unsafe { libc_flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) };
     if result < 0 {
-        return Err(io::Error::last_os_error().into());
+        let error = io::Error::last_os_error();
+        if matches!(error.raw_os_error(), Some(code) if code == EWOULDBLOCK || code == EAGAIN) {
+            return Err(Error::Busy(addr.to_string()));
+        }
+        return Err(error.into());
     }
     Ok(file)
 }
@@ -461,6 +469,12 @@ fn write_all(fd: i32, mut data: &[u8]) -> io::Result<()> {
             }
             return Err(error);
         }
+        if written == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "failed to write SPP frame",
+            ));
+        }
         data = &data[written as usize..];
     }
     Ok(())
@@ -478,5 +492,35 @@ fn read_some(fd: RawFd, buf: &mut [u8]) -> io::Result<usize> {
             continue;
         }
         return Err(error);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dispatch_matches_in_flight_by_vendor_and_opcode() {
+        let (response_tx, response_rx) = bounded::<Vec<u8>>(1);
+        let in_flight = Mutex::new(Some(InFlight {
+            expected_vendor: momentum_core::VENDOR_QUALCOMM,
+            expected_response: 0x0107,
+            expected_error: 0x0187,
+            tx: response_tx,
+        }));
+        let (notification_tx, notification_rx) = bounded::<NotificationFrame>(4);
+
+        dispatch_frame(
+            vec![0x04, 0x95, 0x01, 0x07],
+            &in_flight,
+            &notification_tx,
+            &notification_rx,
+        );
+
+        assert!(response_rx.try_recv().is_err());
+        let notification = notification_rx.try_recv().unwrap();
+        assert_eq!(notification.vendor, momentum_core::VENDOR_SENNHEISER);
+        assert_eq!(notification.opcode, 0x0107);
+        assert!(in_flight.lock().unwrap().is_some());
     }
 }

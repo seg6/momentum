@@ -28,6 +28,9 @@ impl FromStr for BdAddr {
             let part = parts
                 .next()
                 .ok_or_else(|| Error::InvalidAddress(s.to_owned()))?;
+            if part.len() != 2 || !part.as_bytes().iter().all(u8::is_ascii_hexdigit) {
+                return Err(Error::InvalidAddress(s.to_owned()));
+            }
             *slot =
                 u8::from_str_radix(part, 16).map_err(|_| Error::InvalidAddress(s.to_owned()))?;
         }
@@ -69,5 +72,11 @@ mod tests {
     #[test]
     fn rejects_non_hex() {
         assert!("80:C3:BA:2A:6A:ZZ".parse::<BdAddr>().is_err());
+    }
+
+    #[test]
+    fn rejects_non_canonical_groups() {
+        assert!("1:2:3:4:5:6".parse::<BdAddr>().is_err());
+        assert!("080:C3:BA:2A:6A:1D".parse::<BdAddr>().is_err());
     }
 }
