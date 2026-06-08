@@ -18,6 +18,8 @@ pub trait Command {
 
     /// Human-readable name used in error messages.
     const NAME: &'static str;
+    /// Wire vendor identifier.
+    const VENDOR: u16 = VENDOR_SENNHEISER;
     /// Wire command identifier.
     const COMMAND: u16;
     /// Wire response identifier (success).
@@ -31,7 +33,7 @@ pub trait Command {
     /// Build a complete GAIA packet (vendor + command + parameters).
     fn build_packet(request: &Self::Request) -> Result<Vec<u8>> {
         let mut out = Vec::with_capacity(8);
-        out.extend_from_slice(&VENDOR_SENNHEISER.to_be_bytes());
+        out.extend_from_slice(&Self::VENDOR.to_be_bytes());
         out.extend_from_slice(&Self::COMMAND.to_be_bytes());
         Self::encode_request(request, &mut out)?;
         Ok(out)
@@ -41,6 +43,14 @@ pub trait Command {
     fn validate_packet(packet: &[u8]) -> Result<&[u8]> {
         if packet.len() < 4 {
             return Err(Error::ShortPacket);
+        }
+        let vendor = u16::from_be_bytes([packet[0], packet[1]]);
+        if vendor != Self::VENDOR {
+            return Err(Error::UnexpectedVendor {
+                command: Self::NAME,
+                got: vendor,
+                expected: Self::VENDOR,
+            });
         }
         let response = u16::from_be_bytes([packet[2], packet[3]]);
         let payload = &packet[4..];
@@ -379,6 +389,7 @@ impl Command for RegisterNotificationQualcomm {
     type Request = u8;
     type Response = ();
     const NAME: &'static str = "Qualcomm_RegisterNotification";
+    const VENDOR: u16 = crate::VENDOR_QUALCOMM;
     const COMMAND: u16 = 0x0007;
 
     fn encode_request(request: &Self::Request, out: &mut Vec<u8>) -> Result<()> {
@@ -387,14 +398,6 @@ impl Command for RegisterNotificationQualcomm {
     }
     fn decode_response(_payload: &[u8]) -> Result<Self::Response> {
         Ok(())
-    }
-
-    fn build_packet(request: &Self::Request) -> Result<Vec<u8>> {
-        let mut out = Vec::with_capacity(5);
-        out.extend_from_slice(&crate::VENDOR_QUALCOMM.to_be_bytes());
-        out.extend_from_slice(&Self::COMMAND.to_be_bytes());
-        Self::encode_request(request, &mut out)?;
-        Ok(out)
     }
 }
 
@@ -426,6 +429,13 @@ mod tests {
         let pkt = [0x04, 0x95, 0x1b, 0x85, 0xff];
         let err = AncGet::validate_packet(&pkt).unwrap_err();
         assert!(matches!(err, Error::GaiaError { .. }));
+    }
+
+    #[test]
+    fn validate_packet_rejects_wrong_vendor() {
+        let pkt = [0x00, 0x1d, 0x01, 0x07];
+        let err = RegisterNotificationSennheiser::validate_packet(&pkt).unwrap_err();
+        assert!(matches!(err, Error::UnexpectedVendor { .. }));
     }
 
     #[test]

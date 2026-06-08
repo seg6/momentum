@@ -18,9 +18,6 @@ pub enum Error {
         expected: usize,
     },
 
-    #[error("unknown enum value {value} for {kind}")]
-    UnknownEnumValue { kind: &'static str, value: u32 },
-
     #[error("GAIA packet too short")]
     ShortPacket,
 
@@ -56,20 +53,15 @@ pub enum Error {
         expected: u16,
     },
 
+    #[error("unexpected GAIA vendor {got:#06x} for {command}; expected {expected:#06x}")]
+    UnexpectedVendor {
+        command: &'static str,
+        got: u16,
+        expected: u16,
+    },
+
     #[error("transport error")]
     Transport(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
-
-    /// A feature was rejected client-side because the headset reports a
-    /// firmware version below the feature's documented minimum.
-    /// Surfaces in [`Headset::set_eq_sub_mode`] etc. when the headset
-    /// is running pre-3.18.0 firmware that does not implement
-    /// `user-eq-2`.
-    #[error("{feature} requires firmware >= {required}; headset reports {found}")]
-    FirmwareTooOld {
-        feature: &'static str,
-        required: &'static str,
-        found: String,
-    },
 }
 
 pub type Result<T> = core::result::Result<T, Error>;
