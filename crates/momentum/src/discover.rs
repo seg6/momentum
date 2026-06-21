@@ -1,15 +1,22 @@
 //! Best-effort headset address autodetection.
-//!
-//! Shells out to `bluetoothctl devices Connected` and looks for a single
-//! device whose name contains `MOMENTUM`. No new dependencies; relies on
-//! the BlueZ CLI that ships with every working stack.
 
+#[cfg(target_os = "windows")]
+use std::mem::size_of;
+#[cfg(target_os = "linux")]
 use std::process::Command;
 
-use anyhow::{Result, anyhow, bail};
+#[cfg(target_os = "linux")]
+use anyhow::bail;
+use anyhow::{Result, anyhow};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Devices::Bluetooth::{
+    BLUETOOTH_DEVICE_INFO, BLUETOOTH_DEVICE_SEARCH_PARAMS, BluetoothFindDeviceClose,
+    BluetoothFindFirstDevice, BluetoothFindNextDevice,
+};
 
 const NAME_NEEDLE: &str = "MOMENTUM";
 
+#[cfg(target_os = "linux")]
 pub fn autodetect() -> Result<String> {
     let output = Command::new("bluetoothctl")
         .args(["devices", "Connected"])
@@ -37,9 +44,66 @@ pub fn autodetect() -> Result<String> {
         .filter(|(_, name)| name.to_ascii_uppercase().contains(NAME_NEEDLE))
         .collect();
 
-    match matches.as_slice() {
+    choose_match(&matches, "bluetoothctl")
+}
+
+#[cfg(target_os = "windows")]
+pub fn autodetect() -> Result<String> {
+    let search = BLUETOOTH_DEVICE_SEARCH_PARAMS {
+        dwSize: size_of::<BLUETOOTH_DEVICE_SEARCH_PARAMS>() as u32,
+        fReturnAuthenticated: 0,
+        fReturnRemembered: 0,
+        fReturnUnknown: 0,
+        fReturnConnected: 1,
+        fIssueInquiry: 0,
+        cTimeoutMultiplier: 0,
+        hRadio: std::ptr::null_mut(),
+    };
+    let mut info = bluetooth_device_info();
+
+    // SAFETY: `search` and `info` point to initialized structures with correct dwSize fields.
+    let find = unsafe { BluetoothFindFirstDevice(&search, &mut info) };
+    if find.is_null() {
+        return choose_match(&[], "Windows Bluetooth API");
+    }
+
+    let mut matches = Vec::new();
+    loop {
+        let name = device_name(&info);
+        if name.to_ascii_uppercase().contains(NAME_NEEDLE) {
+            // SAFETY: reading the active `ullLong` view of the documented address union.
+            let addr = format_bth_addr(unsafe { info.Address.Anonymous.ullLong });
+            matches.push((addr, name));
+        }
+
+        let mut next = bluetooth_device_info();
+        // SAFETY: `find` is a live enumeration handle; `next` has its dwSize initialized.
+        if unsafe { BluetoothFindNextDevice(find, &mut next) } == 0 {
+            break;
+        }
+        info = next;
+    }
+
+    // SAFETY: `find` came from `BluetoothFindFirstDevice` and is no longer used.
+    unsafe {
+        BluetoothFindDeviceClose(find);
+    }
+
+    choose_match(&matches, "Windows Bluetooth API")
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+pub fn autodetect() -> Result<String> {
+    Err(anyhow!(
+        "automatic discovery is not implemented on {}; pass --address or set MOMENTUM_ADDRESS",
+        std::env::consts::OS
+    ))
+}
+
+fn choose_match(matches: &[(String, String)], source: &str) -> Result<String> {
+    match matches {
         [] => Err(anyhow!(
-            "no connected MOMENTUM device found via bluetoothctl; \
+            "no connected MOMENTUM device found via {source}; \
              connect the headset or pass --address / MOMENTUM_ADDRESS"
         )),
         [(addr, _)] => Ok(addr.clone()),
@@ -56,6 +120,37 @@ pub fn autodetect() -> Result<String> {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn bluetooth_device_info() -> BLUETOOTH_DEVICE_INFO {
+    let mut info = BLUETOOTH_DEVICE_INFO::default();
+    info.dwSize = size_of::<BLUETOOTH_DEVICE_INFO>() as u32;
+    info
+}
+
+#[cfg(target_os = "windows")]
+fn device_name(info: &BLUETOOTH_DEVICE_INFO) -> String {
+    let len = info
+        .szName
+        .iter()
+        .position(|ch| *ch == 0)
+        .unwrap_or(info.szName.len());
+    String::from_utf16_lossy(&info.szName[..len])
+}
+
+#[cfg(target_os = "windows")]
+fn format_bth_addr(addr: u64) -> String {
+    format!(
+        "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+        (addr >> 40) & 0xff,
+        (addr >> 32) & 0xff,
+        (addr >> 24) & 0xff,
+        (addr >> 16) & 0xff,
+        (addr >> 8) & 0xff,
+        addr & 0xff,
+    )
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn parse_device_line(line: &str) -> Option<(String, String)> {
     let rest = line.trim().strip_prefix("Device ")?;
     let (addr, name) = rest.split_once(' ')?;
@@ -65,6 +160,7 @@ fn parse_device_line(line: &str) -> Option<(String, String)> {
     Some((addr.to_string(), name.trim().to_string()))
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn is_bdaddr(s: &str) -> bool {
     let bytes = s.as_bytes();
     if bytes.len() != 17 {
@@ -110,5 +206,11 @@ mod tests {
         assert!(!is_bdaddr("80-C3-BA-2A-6A-1D"));
         assert!(!is_bdaddr("80:C3:BA:2A:6A"));
         assert!(!is_bdaddr("zz:C3:BA:2A:6A:1D"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn formats_windows_bluetooth_address() {
+        assert_eq!(format_bth_addr(0x0000_80C3_BA2A_6A1D), "80:C3:BA:2A:6A:1D");
     }
 }

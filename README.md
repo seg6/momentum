@@ -1,7 +1,7 @@
 # momentum
 
 A small command-line remote for Sennheiser MOMENTUM 4 headphones.
-Talks GAIA over RFCOMM/SPP on Linux.
+Talks GAIA over RFCOMM/SPP on Linux and Windows.
 
 Each invocation opens the Bluetooth transport, runs one operation,
 prints the result, and exits. There is no daemon, no IPC, no UI.
@@ -50,10 +50,11 @@ therefore disables adaptive ANC first when `<level>` is greater than 0.
 
 ## Configuration
 
-The headset Bluetooth address is auto-detected by running
-`bluetoothctl devices Connected` and picking the unique connected
-device whose name contains `MOMENTUM`. To override, pass `--address`
-or set the environment variable:
+The headset Bluetooth address is auto-detected from connected Bluetooth
+devices and must uniquely match a device whose name contains `MOMENTUM`.
+Linux uses `bluetoothctl devices Connected`; Windows uses the native
+Bluetooth device API. To override, pass `--address` or set the environment
+variable:
 
 ```
 export MOMENTUM_ADDRESS=AA:BB:CC:DD:EE:FF
@@ -70,16 +71,17 @@ Other globals:
 
 ## Concurrent connections
 
-The Linux SPP transport opens an exclusive RFCOMM channel to the
-headset. While `momentum watch` is running, another `momentum`
-invocation will fail to open the transport. Stop `watch` (or run the
-two against different headsets) instead of layering a daemon back on.
+The SPP transport opens an exclusive RFCOMM channel to the headset.
+While `momentum watch` is running, another `momentum` invocation will
+fail to open the transport. Stop `watch` (or run the two against
+different headsets) instead of layering a daemon back on.
 
 ## Building
 
 ```
 cargo build --release
-./target/release/momentum --help
+target/release/momentum --help
+# Windows: target\release\momentum.exe --help
 ```
 
 ## License

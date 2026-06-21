@@ -16,8 +16,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 pub struct Cli {
     /// Headset Bluetooth address (e.g. `AA:BB:CC:DD:EE:FF`).
     ///
-    /// If omitted, the CLI runs `bluetoothctl devices Connected` and uses
-    /// the unique connected device whose name contains `MOMENTUM`.
+    /// If omitted, the CLI uses platform discovery and picks the unique
+    /// connected device whose name contains `MOMENTUM`.
     #[arg(long, env = "MOMENTUM_ADDRESS", global = true)]
     pub address: Option<String>,
 
