@@ -72,27 +72,15 @@ fn anc<T: Transport>(
     w: &mut impl Write,
 ) -> Result<()> {
     match command {
-        None => {
-            let master = h.anc()?;
-            let modes = h.anc_modes()?;
-            if json {
-                return print_json(
-                    &serde_json::json!({
-                        "on": matches!(master, Toggle::On),
-                        "wind": modes.wind,
-                        "adaptive": modes.adaptive,
-                    }),
-                    w,
-                );
-            }
-            writeln!(w, "ANC")?;
-            print_row("master", master, w)?;
-            print_row("wind", modes.wind, w)?;
-            print_row("adaptive", on_off(modes.adaptive), w)?;
-            Ok(())
+        None => print_anc_state(h, json, w),
+        Some(AncCommand::On) => {
+            h.set_anc(Toggle::On)?;
+            print_anc_state(h, json, w)
         }
-        Some(AncCommand::On) => h.set_anc(Toggle::On).map_err(Into::into),
-        Some(AncCommand::Off) => h.set_anc(Toggle::Off).map_err(Into::into),
+        Some(AncCommand::Off) => {
+            h.set_anc(Toggle::Off)?;
+            print_anc_state(h, json, w)
+        }
         Some(AncCommand::Wind { state }) => {
             let value = match state {
                 WindArg::Off => WindState::Off,
@@ -100,12 +88,34 @@ fn anc<T: Transport>(
                 WindArg::Auto => WindState::Auto,
             }
             .as_u8();
-            h.set_anc_mode(AncSubMode::Wind, value).map_err(Into::into)
+            h.set_anc_mode(AncSubMode::Wind, value)?;
+            print_anc_state(h, json, w)
         }
-        Some(AncCommand::Adaptive { state }) => h
-            .set_anc_mode(AncSubMode::Adaptive, switch_u8(state))
-            .map_err(Into::into),
+        Some(AncCommand::Adaptive { state }) => {
+            h.set_anc_mode(AncSubMode::Adaptive, switch_u8(state))?;
+            print_anc_state(h, json, w)
+        }
     }
+}
+
+fn print_anc_state<T: Transport>(h: &mut Headset<T>, json: bool, w: &mut impl Write) -> Result<()> {
+    let master = h.anc()?;
+    let modes = h.anc_modes()?;
+    if json {
+        return print_json(
+            &serde_json::json!({
+                "on": matches!(master, Toggle::On),
+                "wind": modes.wind,
+                "adaptive": modes.adaptive,
+            }),
+            w,
+        );
+    }
+    writeln!(w, "ANC")?;
+    print_row("master", master, w)?;
+    print_row("wind", modes.wind, w)?;
+    print_row("adaptive", on_off(modes.adaptive), w)?;
+    Ok(())
 }
 
 fn transparency<T: Transport>(
@@ -115,16 +125,25 @@ fn transparency<T: Transport>(
     w: &mut impl Write,
 ) -> Result<()> {
     match level {
-        Some(level) => h.set_transparency(level).map_err(Into::into),
-        None => {
-            let level = h.transparency()?;
-            if json {
-                print_json(&serde_json::json!({ "level": level }), w)
-            } else {
-                writeln!(w, "{level}")?;
-                Ok(())
-            }
+        Some(level) => {
+            h.set_transparency(level)?;
+            print_transparency(h, json, w)
         }
+        None => print_transparency(h, json, w),
+    }
+}
+
+fn print_transparency<T: Transport>(
+    h: &mut Headset<T>,
+    json: bool,
+    w: &mut impl Write,
+) -> Result<()> {
+    let level = h.transparency()?;
+    if json {
+        print_json(&serde_json::json!({ "level": level }), w)
+    } else {
+        writeln!(w, "{level}")?;
+        Ok(())
     }
 }
 
@@ -162,7 +181,11 @@ fn eq<T: Transport>(
                 );
             }
             writeln!(w, "EQ")?;
-            print_row("range", format!("{}..{}", config.min_gain, config.max_gain), w)?;
+            print_row(
+                "range",
+                format!("{}..{}", config.min_gain, config.max_gain),
+                w,
+            )?;
             for (i, gain) in bands.iter().enumerate() {
                 print_row(&format!("band {}", i + 1), gain, w)?;
             }
@@ -182,6 +205,11 @@ fn eq<T: Transport>(
             }
             let band0 = band - 1;
             h.set_eq_gain(band0, gain)?;
+            let actual = h.eq_gain(band0)?;
+            if json {
+                return print_json(&serde_json::json!({ "band": band, "gain": actual }), w);
+            }
+            print_row(&format!("band {band}"), actual, w)?;
             Ok(())
         }
     }
