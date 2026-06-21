@@ -11,7 +11,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 /// Each invocation opens the Bluetooth transport, runs one operation,
 /// prints the result, and exits. There is no daemon. To watch for
 /// device-pushed events, use `momentum watch`.
-#[derive(Debug, Parser)]
+#[derive(Debug, Clone, Parser)]
 #[command(name = "momentum", version, about, long_about = None)]
 pub struct Cli {
     /// Headset Bluetooth address (e.g. `AA:BB:CC:DD:EE:FF`).
@@ -43,7 +43,7 @@ pub struct Cli {
     pub command: Command,
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Clone, Subcommand)]
 pub enum Command {
     /// Print a snapshot of common runtime state.
     Status,
@@ -68,9 +68,11 @@ pub enum Command {
     Info,
     /// Subscribe to device notifications and print events until killed.
     Watch,
+    /// Open the interactive terminal dashboard.
+    Tui,
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Clone, Subcommand)]
 pub enum AncCommand {
     /// Turn the master ANC switch on.
     On,
@@ -82,7 +84,7 @@ pub enum AncCommand {
     Adaptive { state: Switch },
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Clone, Subcommand)]
 pub enum EqCommand {
     /// Print all band gains (default).
     Show,

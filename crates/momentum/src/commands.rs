@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use momentum_core::{
     Headset, Notification, Transport,
     state::{AncSubMode, Toggle, WindState},
@@ -16,6 +16,10 @@ const DEFAULT_CHANNEL: u8 = 1;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(4);
 
 pub fn run(cli: Cli, w: &mut impl Write) -> Result<()> {
+    if matches!(cli.command, Command::Tui) {
+        bail!("tui requires an interactive terminal; call momentum::run");
+    }
+
     let json = cli.json;
     let mut headset = open_headset(&cli)?;
 
@@ -27,10 +31,11 @@ pub fn run(cli: Cli, w: &mut impl Write) -> Result<()> {
         Command::Eq { command } => eq(&mut headset, command.unwrap_or(EqCommand::Show), json, w),
         Command::Info => info(&mut headset, json, w),
         Command::Watch => watch(&mut headset, w),
+        Command::Tui => unreachable!("tui command is handled before opening the transport"),
     }
 }
 
-fn open_headset(cli: &Cli) -> Result<Headset<Box<dyn Transport>>> {
+pub(crate) fn open_headset(cli: &Cli) -> Result<Headset<Box<dyn Transport>>> {
     let address = match cli.address.clone() {
         Some(addr) => addr,
         None => discover::autodetect()?,

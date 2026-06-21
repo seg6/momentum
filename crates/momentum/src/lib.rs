@@ -1,6 +1,7 @@
 pub mod args;
 pub mod commands;
 pub mod discover;
+pub mod tui;
 
 // Re-export the most common types at crate root so consumers can write
 // `momentum::Cli::parse()` instead of `momentum::args::Cli::parse()`.
@@ -14,11 +15,17 @@ use std::io::{self, Write};
 /// Library consumers (e.g. the Tauri UI) can capture output by passing
 /// a `Vec<u8>` or similar, avoiding a round-trip through a subprocess.
 pub fn run_with_output(cli: args::Cli, writer: &mut impl Write) -> Result<()> {
+    if matches!(cli.command, args::Command::Tui) {
+        anyhow::bail!("tui requires an interactive terminal; call momentum::run");
+    }
     commands::run(cli, writer)
 }
 
 /// Execute a CLI command, writing output to stdout.
 pub fn run(cli: args::Cli) -> Result<()> {
+    if matches!(cli.command, args::Command::Tui) {
+        return tui::run(cli);
+    }
     run_with_output(cli, &mut io::stdout().lock())
 }
 

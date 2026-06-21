@@ -22,10 +22,17 @@ momentum eq
 momentum eq set 2 -1
 momentum info
 momentum watch | jq .
+momentum tui
 ```
 
 `watch` connects, subscribes to device-pushed notifications, and prints
 one NDJSON event per line until interrupted.
+
+`tui` opens an interactive terminal dashboard. Keys: `Tab` / `Shift+Tab`
+move focus, `Enter` / `Space` activate the focused control, `q` quit,
+`r` refresh, `a` toggle ANC, `w` cycle wind mode, `d` toggle adaptive
+ANC, `+`/`-` adjust transparency (or EQ when EQ is focused), `h`/`l`
+move/adjust horizontally, `j`/`k` move/adjust vertically, `?` help.
 
 `status` issues a dozen-plus sequential GAIA round-trips to build its
 snapshot, so it can take a couple of seconds over RFCOMM. The
