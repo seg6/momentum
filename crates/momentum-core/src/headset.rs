@@ -131,6 +131,9 @@ impl<T: Transport> Headset<T> {
         self.call::<gaia::TransparencyGet>(&())
     }
     pub fn set_transparency(&mut self, level: u8) -> Result<()> {
+        if level > 0 && self.anc_modes()?.adaptive {
+            self.set_anc_mode(AncSubMode::Adaptive, 0)?;
+        }
         self.call::<gaia::TransparencySet>(&level)
     }
 
@@ -215,5 +218,25 @@ mod tests {
         )]);
         let mut headset = Headset::new(transport);
         headset.set_anc(Toggle::On).unwrap();
+    }
+
+    #[test]
+    fn set_transparency_disables_adaptive_first() {
+        let transport = MockTransport::new([
+            (
+                vec![0x04, 0x95, 0x1a, 0x01],
+                vec![0x04, 0x95, 0x1b, 0x01, 1, 0, 2, 0, 3, 1],
+            ),
+            (
+                vec![0x04, 0x95, 0x1a, 0x00, 3, 0], // Adaptive off
+                vec![0x04, 0x95, 0x1b, 0x00],
+            ),
+            (
+                vec![0x04, 0x95, 0x1a, 0x02, 40],
+                vec![0x04, 0x95, 0x1b, 0x02],
+            ),
+        ]);
+        let mut headset = Headset::new(transport);
+        headset.set_transparency(40).unwrap();
     }
 }

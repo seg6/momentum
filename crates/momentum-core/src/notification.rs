@@ -495,9 +495,8 @@ fn decode_anc_modes(payload: &[u8]) -> Option<AncSubModes> {
 }
 
 /// Vendor IDs that may legitimately produce notifications on this device.
-/// Today only Sennheiser-vendor events are recognised in the typed decode
-/// table above; Qualcomm-core events (vendor `0x001D`, e.g. OTA upgrade
-/// progress) all fall through to [`Notification::Unknown`].
+/// Sennheiser-vendor events are decoded individually; Qualcomm-core events
+/// currently surface as [`Notification::QualcommCore`].
 pub const NOTIFICATION_VENDORS: &[u16] = &[VENDOR_SENNHEISER, VENDOR_QUALCOMM];
 
 #[cfg(test)]

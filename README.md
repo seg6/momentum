@@ -45,8 +45,8 @@ mode" master toggle, but on this firmware it is bookkeeping only and
 has no audible effect, so the CLI does not expose it.
 
 The one firmware-enforced interaction observed is that **adaptive ANC
-clamps the transparency level to 0** — writes are silently dropped
-until adaptive is disabled.
+clamps the transparency level to 0**. `momentum transparency <level>`
+therefore disables adaptive ANC first when `<level>` is greater than 0.
 
 ## Configuration
 
