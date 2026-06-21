@@ -7,7 +7,7 @@ use crate::Error;
 ///
 /// Parsed from the canonical `aa:bb:cc:dd:ee:ff` form. The internal byte
 /// order is **little-endian** (i.e. the byte that prints first sits at
-/// index 5), which matches the layout the kernel expects in `sockaddr_rc`.
+/// index 5), matching Linux `sockaddr_rc` and Windows `BTH_ADDR` storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BdAddr(pub(crate) [u8; 6]);
 
@@ -15,6 +15,13 @@ impl BdAddr {
     #[must_use]
     pub const fn raw(self) -> [u8; 6] {
         self.0
+    }
+
+    #[must_use]
+    pub const fn as_u64(self) -> u64 {
+        u64::from_le_bytes([
+            self.0[0], self.0[1], self.0[2], self.0[3], self.0[4], self.0[5], 0, 0,
+        ])
     }
 }
 
@@ -60,6 +67,7 @@ mod tests {
     fn parses_canonical_address() {
         let addr: BdAddr = "80:C3:BA:2A:6A:1D".parse().unwrap();
         assert_eq!(addr.raw(), [0x1D, 0x6A, 0x2A, 0xBA, 0xC3, 0x80]);
+        assert_eq!(addr.as_u64(), 0x0000_80C3_BA2A_6A1D);
         assert_eq!(addr.to_string(), "80:c3:ba:2a:6a:1d");
     }
 

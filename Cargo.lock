@@ -226,6 +226,7 @@ dependencies = [
  "momentum-core",
  "thiserror",
  "tracing",
+ "windows-sys",
 ]
 
 [[package]]
