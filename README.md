@@ -91,6 +91,22 @@ target/release/momentum --help
 # Windows: target\release\momentum.exe --help
 ```
 
+### macOS
+
+macOS gates Bluetooth behind TCC, which requires the binary to be code-signed
+with a *stable* identity and to run as its own responsible process. Both are
+handled for you, but signing needs a one-time setup:
+
+```
+make setup-signing      # once: create a local 'momentum-dev' signing identity
+make run ARGS="status"  # builds, signs, and runs
+```
+
+`make build` signs the binary after compiling; plain `cargo build` does not, so
+use `make` on macOS. On the first run, approve the Bluetooth permission prompt
+for **momentum** — the grant then persists across rebuilds. (`make` is a no-op
+wrapper for signing on Linux/Windows, where `cargo build` is enough.)
+
 ## License
 
 MIT
