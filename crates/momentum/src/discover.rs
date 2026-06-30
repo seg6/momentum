@@ -4,6 +4,8 @@
 use std::mem::size_of;
 #[cfg(target_os = "linux")]
 use std::process::Command;
+#[cfg(target_os = "macos")]
+use std::process::Command as ProcessCommand;
 
 #[cfg(target_os = "linux")]
 use anyhow::bail;
@@ -92,7 +94,50 @@ pub fn autodetect() -> Result<String> {
     choose_match(&matches, "Windows Bluetooth API")
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+#[cfg(target_os = "macos")]
+pub fn autodetect() -> Result<String> {
+    let output = ProcessCommand::new("system_profiler")
+        .args(["SPBluetoothDataType", "-json"])
+        .output()
+        .map_err(|e| {
+            anyhow!(
+                "could not run `system_profiler SPBluetoothDataType -json` ({e}); \
+                 pass --address or set MOMENTUM_ADDRESS"
+            )
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "`system_profiler SPBluetoothDataType -json` exited {}: {}",
+            output.status,
+            stderr.trim()
+        );
+    }
+
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let devices = macos_connected_devices(&report);
+    let named: Vec<(String, String)> = devices
+        .iter()
+        .filter(|(_, name, _)| name.to_ascii_uppercase().contains(NAME_NEEDLE))
+        .map(|(addr, name, _)| (addr.clone(), name.clone()))
+        .collect();
+    if !named.is_empty() {
+        return choose_match(&named, "system_profiler");
+    }
+
+    // `system_profiler -json` may report paired headphones under generic keys
+    // like `headset`, even when the Bluetooth Settings UI shows the real name.
+    // If there is exactly one connected headset, use it as the macOS fallback.
+    let headsets: Vec<(String, String)> = devices
+        .into_iter()
+        .filter(|(_, _, minor)| minor.as_deref() == Some("Headset"))
+        .map(|(addr, name, _)| (addr, name))
+        .collect();
+    choose_match(&headsets, "system_profiler connected headsets")
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 pub fn autodetect() -> Result<String> {
     Err(anyhow!(
         "automatic discovery is not implemented on {}; pass --address or set MOMENTUM_ADDRESS",
@@ -177,6 +222,32 @@ fn is_bdaddr(s: &str) -> bool {
         }
     }
     true
+}
+
+#[cfg(target_os = "macos")]
+fn macos_connected_devices(report: &serde_json::Value) -> Vec<(String, String, Option<String>)> {
+    report
+        .get("SPBluetoothDataType")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|controller| controller.get("device_connected"))
+        .filter_map(|v| v.as_array())
+        .flatten()
+        .filter_map(|entry| entry.as_object())
+        .flat_map(|entry| entry.iter())
+        .filter_map(|(name, details)| {
+            let addr = details.get("device_address")?.as_str()?;
+            if !is_bdaddr(addr) {
+                return None;
+            }
+            let minor = details
+                .get("device_minorType")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            Some((addr.to_string(), name.to_string(), minor))
+        })
+        .collect()
 }
 
 #[cfg(test)]
