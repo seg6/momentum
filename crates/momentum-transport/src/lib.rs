@@ -1,6 +1,7 @@
 //! Platform-specific [`momentum_core::Transport`] implementations.
 
 mod error;
+mod spp_transport;
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 mod bdaddr;

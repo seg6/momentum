@@ -1,19 +1,17 @@
-//! Windows RFCOMM/SPP transport.
+//! Windows RFCOMM/SPP byte-stream adapter.
 //!
-//! Connects to an already-paired classic-Bluetooth headset using WinSock's
-//! Bluetooth address family (`AF_BTH`) and RFCOMM protocol. The GAIA/SPP
-//! framing and response/notification demultiplexing mirrors the Linux
-//! transport so higher layers see the same blocking [`Transport`] interface.
+//! This module owns only WinSock Bluetooth setup and process locking. The
+//! shared `spp_transport` module handles SPP framing, request/response
+//! matching, notification routing, and the reader thread.
 
 use std::io;
 use std::mem::{MaybeUninit, size_of};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::thread::{self, JoinHandle};
+use std::sync::OnceLock;
 use std::time::Duration;
 
-use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
-use momentum_core::{NotificationFrame, Transport, spp};
-use tracing::{debug, trace, warn};
+use crossbeam_channel::Receiver;
+use momentum_core::{NotificationFrame, Transport};
+use tracing::debug;
 use windows_sys::Win32::Devices::Bluetooth::{AF_BTH, BTHPROTO_RFCOMM, SOCKADDR_BTH};
 use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE};
 use windows_sys::Win32::Networking::WinSock::{
@@ -24,19 +22,8 @@ use windows_sys::Win32::Networking::WinSock::{
 };
 use windows_sys::Win32::System::Threading::CreateMutexW;
 
+use crate::spp_transport::{SppIo, SppTransport as SharedSppTransport};
 use crate::{BdAddr, Error, Result};
-
-const READ_BUFFER_SIZE: usize = 1024;
-const NOTIFICATION_BACKLOG: usize = 256;
-const RESPONSE_BIT: u16 = 0x0100;
-const ERROR_BIT: u16 = 0x0080;
-
-struct InFlight {
-    expected_vendor: u16,
-    expected_response: u16,
-    expected_error: u16,
-    tx: Sender<Vec<u8>>,
-}
 
 struct Socket(SOCKET);
 
@@ -64,6 +51,7 @@ struct ProcessLock {
 // Windows HANDLE values are kernel references that can be closed from the
 // owning process regardless of the thread that drops this wrapper.
 unsafe impl Send for ProcessLock {}
+unsafe impl Sync for ProcessLock {}
 
 impl Drop for ProcessLock {
     fn drop(&mut self) {
@@ -76,22 +64,36 @@ impl Drop for ProcessLock {
     }
 }
 
-/// RFCOMM transport with SPP framing.
-pub struct SppTransport {
-    socket: Arc<Socket>,
+struct WindowsRfcomm {
+    socket: Socket,
     _lock: ProcessLock,
-    write_buffer: Vec<u8>,
-    timeout: Duration,
-    in_flight: Arc<Mutex<Option<InFlight>>>,
-    notifications: Receiver<NotificationFrame>,
-    reader: Option<JoinHandle<()>>,
+}
+
+impl SppIo for WindowsRfcomm {
+    fn read_some(&self, buf: &mut [u8]) -> io::Result<usize> {
+        read_some(self.socket.raw(), buf)
+    }
+
+    fn write_all(&self, data: &[u8]) -> io::Result<()> {
+        write_all(self.socket.raw(), data)
+    }
+
+    fn shutdown(&self) {
+        // SAFETY: `self.socket` owns a valid WinSock socket while this adapter is alive.
+        unsafe {
+            shutdown(self.socket.raw(), SD_BOTH);
+        }
+    }
+}
+
+/// RFCOMM transport with Sennheiser SPP framing.
+pub struct SppTransport {
+    inner: SharedSppTransport<WindowsRfcomm>,
 }
 
 impl core::fmt::Debug for SppTransport {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("SppTransport")
-            .field("socket", &self.socket.raw())
-            .finish_non_exhaustive()
+        f.debug_struct("SppTransport").finish_non_exhaustive()
     }
 }
 
@@ -109,196 +111,26 @@ impl SppTransport {
         };
 
         debug!(%addr, channel, "connecting RFCOMM");
-        let socket = Arc::new(connect_socket(&sock_addr, timeout)?);
-        let in_flight: Arc<Mutex<Option<InFlight>>> = Arc::new(Mutex::new(None));
-        let (notif_tx, notif_rx) = bounded::<NotificationFrame>(NOTIFICATION_BACKLOG);
-
-        let reader = {
-            let socket = Arc::clone(&socket);
-            let in_flight = Arc::clone(&in_flight);
-            let notif_rx_for_reader = notif_rx.clone();
-            thread::Builder::new()
-                .name("momentum-spp-reader".into())
-                .spawn(move || reader_loop(socket, in_flight, notif_tx, notif_rx_for_reader))
-                .map_err(|e| Error::from(io::Error::other(e.to_string())))?
-        };
-
+        let socket = connect_socket(&sock_addr, timeout)?;
         Ok(Self {
-            socket,
-            _lock: lock,
-            write_buffer: Vec::with_capacity(READ_BUFFER_SIZE),
-            timeout,
-            in_flight,
-            notifications: notif_rx,
-            reader: Some(reader),
+            inner: SharedSppTransport::new(
+                WindowsRfcomm {
+                    socket,
+                    _lock: lock,
+                },
+                timeout,
+            )?,
         })
     }
 }
 
 impl Transport for SppTransport {
     fn transact(&mut self, packet: &[u8]) -> momentum_core::Result<Vec<u8>> {
-        if packet.len() < 4 {
-            return Err(momentum_core::Error::Transport(Box::new(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "GAIA packet shorter than 4 bytes",
-            ))));
-        }
-        let expected_vendor = u16::from_be_bytes([packet[0], packet[1]]);
-        let command_opcode = u16::from_be_bytes([packet[2], packet[3]]);
-        let expected_response = command_opcode | RESPONSE_BIT;
-        let expected_error = expected_response | ERROR_BIT;
-
-        let (tx, rx) = bounded::<Vec<u8>>(1);
-        {
-            let mut guard = self
-                .in_flight
-                .lock()
-                .map_err(|_| momentum_core::Error::Transport(Box::new(Error::Closed)))?;
-            *guard = Some(InFlight {
-                expected_vendor,
-                expected_response,
-                expected_error,
-                tx,
-            });
-        }
-
-        self.write_buffer.clear();
-        spp::write_frame(packet, &mut self.write_buffer)?;
-        trace!(bytes = ?packet, "send GAIA");
-        if let Err(e) = write_all(self.socket.raw(), &self.write_buffer) {
-            let _ = self.in_flight.lock().map(|mut g| g.take());
-            return Err(momentum_core::Error::Transport(Box::new(e)));
-        }
-
-        match rx.recv_timeout(self.timeout) {
-            Ok(payload) => {
-                trace!(bytes = ?payload, "recv GAIA");
-                Ok(payload)
-            }
-            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                let _ = self.in_flight.lock().map(|mut g| g.take());
-                Err(momentum_core::Error::Transport(Box::new(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "SPP response timeout",
-                ))))
-            }
-            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
-                Err(momentum_core::Error::Transport(Box::new(Error::Closed)))
-            }
-        }
+        self.inner.transact(packet)
     }
 
     fn subscribe(&self) -> Option<Receiver<NotificationFrame>> {
-        Some(self.notifications.clone())
-    }
-}
-
-impl Drop for SppTransport {
-    fn drop(&mut self) {
-        // SAFETY: `self.socket` owns a valid WinSock socket until this Drop returns.
-        unsafe {
-            shutdown(self.socket.raw(), SD_BOTH);
-        }
-        if let Some(handle) = self.reader.take() {
-            let _ = handle.join();
-        }
-    }
-}
-
-fn reader_loop(
-    socket: Arc<Socket>,
-    in_flight: Arc<Mutex<Option<InFlight>>>,
-    notifications: Sender<NotificationFrame>,
-    notifications_drain: Receiver<NotificationFrame>,
-) {
-    let raw = socket.raw();
-    let mut read_buffer: Vec<u8> = Vec::with_capacity(READ_BUFFER_SIZE);
-
-    loop {
-        loop {
-            match spp::extract_frame(&mut read_buffer) {
-                Ok(Some(payload)) => {
-                    dispatch_frame(payload, &in_flight, &notifications, &notifications_drain)
-                }
-                Ok(None) => break,
-                Err(e) => {
-                    warn!(error = %e, "SPP framing error; resyncing");
-                    read_buffer.clear();
-                    break;
-                }
-            }
-        }
-
-        let mut buf = [0u8; READ_BUFFER_SIZE];
-        match read_some(raw, &mut buf) {
-            Ok(0) => {
-                debug!("SPP reader: EOF");
-                break;
-            }
-            Ok(n) => read_buffer.extend_from_slice(&buf[..n]),
-            Err(e) => {
-                if is_shutdown_error(&e) {
-                    debug!("SPP reader: socket closed");
-                } else {
-                    warn!(error = %e, "SPP reader: read failed");
-                }
-                break;
-            }
-        }
-    }
-
-    if let Ok(mut guard) = in_flight.lock() {
-        guard.take();
-    }
-}
-
-fn dispatch_frame(
-    payload: Vec<u8>,
-    in_flight: &Mutex<Option<InFlight>>,
-    notifications: &Sender<NotificationFrame>,
-    notifications_drain: &Receiver<NotificationFrame>,
-) {
-    if payload.len() < 4 {
-        warn!(len = payload.len(), "SPP reader: short GAIA packet");
-        return;
-    }
-    let vendor = u16::from_be_bytes([payload[0], payload[1]]);
-    let opcode = u16::from_be_bytes([payload[2], payload[3]]);
-
-    let matched = {
-        let mut guard = match in_flight.lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-        let take = guard.as_ref().is_some_and(|slot| {
-            vendor == slot.expected_vendor
-                && (opcode == slot.expected_response || opcode == slot.expected_error)
-        });
-        if take { guard.take() } else { None }
-    };
-
-    if let Some(slot) = matched {
-        let _ = slot.tx.send(payload);
-        return;
-    }
-
-    if (opcode & RESPONSE_BIT) != 0 {
-        trace!(
-            vendor = format_args!("{:#06x}", vendor),
-            opcode = format_args!("{:#06x}", opcode),
-            "response-bit frame did not match in-flight slot; routing as notification"
-        );
-    }
-    let frame = NotificationFrame {
-        vendor,
-        opcode,
-        payload: payload[4..].to_vec(),
-    };
-    if let Err(TrySendError::Full(frame)) = notifications.try_send(frame) {
-        let _ = notifications_drain.try_recv();
-        if notifications.try_send(frame).is_err() {
-            trace!("notification channel full and drain raced; frame dropped");
-        }
+        self.inner.subscribe()
     }
 }
 
@@ -423,6 +255,7 @@ fn wsa_error() -> io::Error {
     io::Error::from_raw_os_error(unsafe { WSAGetLastError() })
 }
 
+#[allow(dead_code)]
 fn is_shutdown_error(error: &io::Error) -> bool {
     matches!(
         error.raw_os_error(),
@@ -433,34 +266,4 @@ fn is_shutdown_error(error: &io::Error) -> bool {
                 || code == WSAENOTSOCK
                 || code == WSAESHUTDOWN
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn dispatch_matches_in_flight_by_vendor_and_opcode() {
-        let (response_tx, response_rx) = bounded::<Vec<u8>>(1);
-        let in_flight = Mutex::new(Some(InFlight {
-            expected_vendor: momentum_core::VENDOR_QUALCOMM,
-            expected_response: 0x0107,
-            expected_error: 0x0187,
-            tx: response_tx,
-        }));
-        let (notification_tx, notification_rx) = bounded::<NotificationFrame>(4);
-
-        dispatch_frame(
-            vec![0x04, 0x95, 0x01, 0x07],
-            &in_flight,
-            &notification_tx,
-            &notification_rx,
-        );
-
-        assert!(response_rx.try_recv().is_err());
-        let notification = notification_rx.try_recv().unwrap();
-        assert_eq!(notification.vendor, momentum_core::VENDOR_SENNHEISER);
-        assert_eq!(notification.opcode, 0x0107);
-        assert!(in_flight.lock().unwrap().is_some());
-    }
 }
