@@ -12,8 +12,28 @@ momentum-core = { path = "../momentum-core" }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 libc = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSArray",
+    "NSString",
+    "NSObject",
+    "NSEnumerator",
+] }
+objc2-io-bluetooth = { version = "0.3", default-features = false, features = [
+    "std",
+    "objc2",
+    "objc2-foundation",
+    "Bluetooth",
+    "IOBluetoothObject",
+    "IOBluetoothDevice",
+    "IOBluetoothRFCOMMChannel",
+    "IOBluetoothUserLib",
+] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { workspace = true, features = [
