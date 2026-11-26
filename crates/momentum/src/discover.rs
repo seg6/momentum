@@ -197,12 +197,41 @@ fn format_bth_addr(addr: u64) -> String {
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn parse_device_line(line: &str) -> Option<(String, String)> {
+    // bluetoothctl 5.87 emits SGR color codes even when stdout is captured,
+    // so normalize its output before looking for the documented line prefix.
+    let line = strip_ansi_csi(line);
     let rest = line.trim().strip_prefix("Device ")?;
     let (addr, name) = rest.split_once(' ')?;
     if !is_bdaddr(addr) {
         return None;
     }
     Some((addr.to_string(), name.trim().to_string()))
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn strip_ansi_csi(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if bytes[index] == 0x1b && bytes.get(index + 1) == Some(&b'[') {
+            let sequence = &bytes[index + 2..];
+            if let Some(end) = sequence
+                .iter()
+                .position(|byte| (0x40..=0x7e).contains(byte))
+            {
+                index += end + 3;
+                continue;
+            }
+        }
+
+        output.push(bytes[index]);
+        index += 1;
+    }
+
+    // Removing ASCII escape sequences from valid UTF-8 preserves validity.
+    String::from_utf8(output).expect("stripped bluetoothctl output remains UTF-8")
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -257,6 +286,15 @@ mod tests {
     #[test]
     fn parses_canonical_line() {
         let parsed = parse_device_line("Device 80:C3:BA:2A:6A:1D MOMENTUM 4");
+        assert_eq!(
+            parsed,
+            Some(("80:C3:BA:2A:6A:1D".into(), "MOMENTUM 4".into()))
+        );
+    }
+
+    #[test]
+    fn parses_colorized_bluetoothctl_line() {
+        let parsed = parse_device_line("\x1b[1;30mDevice 80:C3:BA:2A:6A:1D MOMENTUM 4\x1b[0m");
         assert_eq!(
             parsed,
             Some(("80:C3:BA:2A:6A:1D".into(), "MOMENTUM 4".into()))
